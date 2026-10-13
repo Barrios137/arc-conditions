@@ -1,0 +1,46 @@
+# Plantilla de la GitHub Action del espejo de condiciones de mapa (docs/arc-raiders-brief.md §4).
+# Se copia a .github/workflows/mirror.yml del repo público `arc-conditions` junto con
+# dev/arc/conditions.py (renombrado a conditions.py en la raíz). El widget lee
+# https://raw.githubusercontent.com/<org>/arc-conditions/main/schedule.json (CORS *).
+name: mirror
+on:
+  schedule:
+    - cron: "7 * * * *"      # cada hora, minuto 7 (evita la congestión del minuto 0)
+  workflow_dispatch:
+permissions:
+  contents: write
+  issues: write
+concurrency: mirror
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Parsear la página oficial
+        id: parse
+        run: python conditions.py --out schedule.json
+        continue-on-error: true
+      - name: Publicar si cambió
+        if: steps.parse.outcome == 'success'
+        run: |
+          git config user.name "arc-conditions mirror"
+          git config user.email "legal@simple-code.cloud"
+          if ! git diff --quiet -- schedule.json; then
+            git add schedule.json
+            git commit -m "schedule $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi
+      - name: Avisar si el parseo falló
+        if: steps.parse.outcome != 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "El espejo no pudo parsear arcraiders.com/map-conditions";
+            const open = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: "open", labels: "mirror" });
+            if (!open.data.some(i => i.title === title)) {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, labels: ["mirror"],
+                body: `Fallo en ${new Date().toISOString()}. schedule.json conserva la última versión buena; el widget mostrará la edad del dato.` });
+            }
